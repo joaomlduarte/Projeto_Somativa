@@ -9,4 +9,4 @@ const cors = require('cors')
 
 
 // importa inicializacao do banco (criando tabelas/seed)
-const init
+const {initDb} = require('./models/db')
