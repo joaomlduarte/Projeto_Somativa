@@ -7,21 +7,60 @@ const router = express.Router()               // <- agrupador de rotas
 // Importa “repositório” de Manutenções (operações no banco)
 const Man = require('../models/manutencoesBd') // <- camada de dados de manutenções
 
+// (Novo) Vamos usar uma consulta direta para montar eventos com nome da máquina
+const { all } = require('../models/db')       // <- acesso ao banco para SELECT customizado
+
 // GET /api/manutencoes?status=&maquinaId=&setor= – lista com filtros
 router.get('/', async (req, res, next) => {
   try {
-    const { status, maquinaId, setor } = req.query       // <- lê filtros opcionais
+    const { status, maquinaId, setor } = req.query        // <- lê filtros opcionais
     const itens = await Man.list({ status, maquinaId, setor }) // <- busca no banco
-    res.json(itens)                                       // <- devolve lista normalizada
-  } catch (e) { next(e) }                                  // <- trata erros via middleware
+    res.json(itens)                                        // <- devolve lista normalizada
+  } catch (e) { next(e) }                                   // <- trata erros via middleware
 })
 
 // GET /api/manutencoes/:id – busca manutenção por id
 router.get('/:id', async (req, res, next) => {
   try {
-    const item = await Man.getById(Number(req.params.id)) // <- converte id e busca
+    const item = await Man.getById(Number(req.params.id))  // <- converte id e busca
     if (!item) return res.status(404).json({ error: 'Manutenção não encontrada' })
-    res.json(item)                                        // <- devolve manutenção
+    res.json(item)                                         // <- devolve manutenção
+  } catch (e) { next(e) }
+})
+
+// (NOVO) GET /api/manutencoes/calendar – eventos para o calendário do front
+router.get('/calendar/events', async (req, res, next) => {
+  try {
+    // Fazemos JOIN para obter o nome da máquina (útil no título do evento)
+    const rows = await all(
+      `SELECT m.id,
+              m.tipo,
+              m.status,
+              m.data_agendada,
+              m.data_realizada,
+              m.created_at,
+              mq.nome AS maquina_nome
+         FROM manutencoes m
+         JOIN maquinas mq ON mq.id = m.maquina_id
+        ORDER BY m.id DESC`
+    )
+
+    // Mapeia cada manutenção para o formato de evento esperado pelo front
+    const events = rows.map(r => {
+      // Define início/fim: prioriza data_agendada; se não houver, cai em data_realizada; por fim created_at
+      const start = r.data_agendada || r.data_realizada || r.created_at
+      const end   = r.data_realizada || r.data_agendada || r.created_at
+
+      return {
+        id: r.id,                                     // identificador do evento
+        title: `${r.tipo} - ${r.maquina_nome}`,       // título legível no calendário
+        start,                                        // ISO string (ou null) interpretada pelo front
+        end,                                          // idem
+        status: r.status                              // PENDENTE | EM_ANDAMENTO | CONCLUIDA (útil para cor/legenda)
+      }
+    })
+
+    res.json(events)                                   // <- devolve a lista de eventos
   } catch (e) { next(e) }
 })
 
