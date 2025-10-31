@@ -1,147 +1,143 @@
-// importa sqlite3 e utilitarios de FS
-const sqlite3 = require('sqlite3').verbose()
-const fs = require('fs')
-const path = require('path')
+// ===============================================
+// Conexão com MongoDB via Mongoose + definição de
+// Schemas/Models + seed inicial + gerador de IDs
+// numéricos (collection 'counters').
+// ===============================================
 
-// Le caminho do arquivo do banco a partir do .env
-const DB_FILE = process.env.DB_FILE || './data/dev.db'
-const DB_DIR = path.dirname(DB_FILE)
-if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, {recursive: true})
+// 1) Importa e configura Mongoose
+const mongoose = require('mongoose') // ODM para Mongo
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/somativa'
 
-
-// abre/instancia a conexao com o sqlite
-const db = new sqlite3.Database(DB_FILE)
-
-// Helpers promisificados (run/get/all)
-function run(sql, params = []) {
-    return new Promise((resolve, reject) => {
-        db.run(sql, params, function (err) {
-            if (err) return reject(err)
-            resolve({lastID: this.lastID, changes: this.changes})
-        })
-    })
-}
-function get(sql, params = []) {
-    return new Promise((resolve, reject) => {
-        db.get(sql, params, (err, row) => {
-            if (err) return reject(err)
-            resolve(row)
-        })
-    })
-}
-function all(sql, params = []) {
-    return new Promise((resolve, reject) => {
-        db.all(sql, params, (err, rows) => {
-            if (err) return reject(err)
-            resolve(rows)
-        })
-    })
+// 2) Opções recomendadas de conexão
+const mongooseOpts = {
+  autoIndex: true, // Cria índices definidos no schema
 }
 
-// Criacao de tabelas
-async function createTables() {
-    // cria tabelas se nao existem
-    await run(`
-        CREATE TABLE IF NOT EXISTS setores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-           )
-        `)
+// 3) Define um schema para contador de sequências (IDs numéricos)
+const CounterSchema = new mongoose.Schema({
+  _id: { type: String, required: true },
+  seq: { type: Number, default: 0 }
+}, { collection: 'counters' })
 
-    await run(`
-        CREATE TABLE IF NOT EXISTS maquinas(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            setor_id INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'ATIVA',
-            serie TEXT,
-            create_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (setor_id) REFERENCES setores(id)
-            )
-        `)
+const CounterModel = mongoose.model('Counter', CounterSchema)
 
-    await run(`
-        CREATE TABLE IF NOT EXISTS manutencoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            maquina_id INTEGER NOT NULL,
-            tipo TEXT NOT NULL, -- PREVENTIVA | CORRETIVA
-            descricao TEXT NOT NULL,
-            data_agendada DATETIME,
-            data_realizada DATETIME,
-            status TEXT NOT NULL DEFAULT 'PENDENTE', -- PENDENTE | EM_ANDAMENTO | CONCLUIDA
-            prioridade INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (maquina_id) REFERENCES maquinas(id)
-           )
-        `)
-
-    await run(`
-        CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE,
-        password TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'user'
-       )
-    `)
+// 4) Helper para obter próximo número da sequência
+async function getNextSeq(name) {
+  // findOneAndUpdate com $inc garante atomicidade
+  const ret = await CounterModel.findOneAndUpdate(
+    { _id: name },
+    { $inc: { seq: 1 } },
+    { upsert: true, new: true }
+  )
+  return ret.seq
 }
 
 
-// Seed inicial para testes
+// 5) Schemas do domínio (com 'id' numérico e timestamps)
+const SetorSchema = new mongoose.Schema({
+  id: { type: Number, unique: true, index: true }, //id incremental
+  nome: { type: String, required: true }, //nome do setor
+}, { timestamps: { createdAt: 'createdAt', updatedAt, updatedAt: 'updatedAt' }, collection: 'setores' })
+
+const MaquinaSchema = new mongoose.Schema({
+  id: { type: Number, unique: true, index: true }, // id incremental
+  nome: { type: String, required: true }, // Nome
+  setorId: { type: Number, required: true, index: true }, // referência ao Setor.id (numérico)
+  status: { Type: String, default: null },
+}, { timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' }, collection: 'maquinas'})
+
+
+const ManutencaoSchema = new mongoose.Schema({
+  id: { type: Number, unique: true, index: true },    // id incremental
+  maquinaId: { type: Number, required: true, index: true }, // ref a Maquina.id (numérico)
+  tipo: { type: String, enum: ['PREVENTIVA', 'CORRETIVA'], required: true },
+  descricao: { type: String, required: true },
+  dataAgendada: { type: Date, default: null },
+  dataRealizada: { type: Date, default: null },
+  status: { type: String, enum: ['PENDENTE', 'EM_ANDAMENTO', 'CONCLUIDA'], default: 'PENDENTE' },
+  prioridade: { type: Number, default: null },        // 1..5
+}, { timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' }, collection: 'manutencoes' })
+
+const UserSchema = new mongoose.Schema({
+  id: { type: Number, unique: true, index: true }, // id incremental
+  name: { type: String, required: true },
+  email: { type: String, required: true, index: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, default: 'user' },
+}, { collection: 'users' })
+
+// 6) compila os Models
+const SetorModel = mongoose.model('Setor', SetorSchema)
+const MaquinaModel = mongoose.model('Maquina', MaquinaSchema)
+const ManutencaoModel = mongoose.model('Manutencao', ManutencaoSchema)
+const UserModel = mongoose.model('User', UserSchema)
+
+// 7) Seed inicial (Só roda se estiver vazio)
 async function seedIfEmpty() {
-    // insere 2 usuarios de teste se a tabela estiver vazia
-    const u = await get(`SELECT COUNT(*) as n FROM users`)
-    if (u.n === 0) {
-        await run(`INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)`, ['Admin', 'admin@smpm.local', '123456', 'admin'])
-        await run(`INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)`, ['Operador', 'oper@smpm.local', '123456', 'user'])
-    }
-
-    //setores/maquinas/manutenções iniciais
-  const s = await get(`SELECT COUNT(*) as n FROM setores`)
-  if (s.n === 0) {
-    const { lastID: s1 } = await run(`INSERT INTO setores (nome) VALUES (?)`, ['Montagem'])
-    const { lastID: s2 } = await run(`INSERT INTO setores (nome) VALUES (?)`, ['Pintura'])
-    const { lastID: s3 } = await run(`INSERT INTO setores (nome) VALUES (?)`, ['Usinagem'])
-
-    const { lastID: m1 } = await run(
-      `INSERT INTO maquinas (nome, setor_id, status, serie) VALUES (?, ?, ?, ?)`,
-      ['Prensa Hidráulica', s1, 'ATIVA', 'PH-001']
-    )
-    const { lastID: m2 } = await run(
-      `INSERT INTO maquinas (nome, setor_id, status, serie) VALUES (?, ?, ?, ?)`,
-      ['Esteira XZ', s2, 'MANUTENCAO', 'EXZ-234']
-    )
-    const { lastID: m3 } = await run(
-      `INSERT INTO maquinas (nome, setor_id, status, serie) VALUES (?, ?, ?, ?)`,
-      ['Torno CNC', s3, 'PARADA', 'TC-987']
-    )
-
-    // hoje
-    await run(
-      `INSERT INTO manutencoes (maquina_id, tipo, descricao, data_agendada, status, prioridade)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [m1, 'PREVENTIVA', 'Troca de óleo e inspeção', new Date().toISOString(), 'PENDENTE', 2]
-    )
-    // amanhã
-    await run(
-      `INSERT INTO manutencoes (maquina_id, tipo, descricao, data_agendada, status, prioridade)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [m2, 'CORRETIVA', 'Substituição de rolamento', new Date(Date.now() + 86400000).toISOString(), 'EM_ANDAMENTO', 1]
-    )
-    // -2 dias (concluída)
-    await run(
-      `INSERT INTO manutencoes (maquina_id, tipo, descricao, data_realizada, status, prioridade)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [m3, 'PREVENTIVA', 'Ajuste e limpeza', new Date(Date.now() - 2 * 86400000).toISOString(), 'CONCLUIDA', 3]
-    )
+  // Usuários
+  const usersCount = await UserModel.countDocuments()
+  if (usersCount === 0) {
+    const id1 = await getNextSeq('users')
+    await UserModel.create({ id: id1, name: 'Admin', email: 'admin@smpm.local', password: '123456', role: 'admin' })
+    const id2 = await getNextSeq('users')
+    await UserModel.create({ id: id2, name: 'Operador', email: 'oper@smpm.local', password: '123456', role: 'user' })
   }
+
+  // Setores + Máquinas + Manutenções
+  const setCount = await SetorModel.countDocuments()
+  if (setCount === 0) {
+    // Setores
+    const sid1 = await getNextSeq('setores')
+    const sid2 = await getNextSeq('setores')
+    const sid3 = await getNextSeq('setores')
+    await SetorModel.create({ id: sid1, nome: 'Montagem' })
+    await SetorModel.create({ id: sid2, nome: 'Pintura' })
+    await SetorModel.create({ id: sid3, nome: 'Usinagem' })
+
+    // Máquinas
+    const mid1 = await getNextSeq('maquinas')
+    const mid2 = await getNextSeq('maquinas')
+    const mid3 = await getNextSeq('maquinas')
+    await MaquinaModel.create({ id: mid1, nome: 'Prensa Hidráulica', setorId: sid1, status: 'ATIVA', serie: 'PH-001' })
+    await MaquinaModel.create({ id: mid2, nome: 'Esteira XZ', setorId: sid2, status: 'MANUTENCAO', serie: 'EXZ-234'})
+    await MaquinaModel.create({ id: mid3, nome: 'Torno CNC', setorId: sid3, status: 'PARADA', serie: 'TC-987' }) 
+  }
+
+  // Manutenções
+  const now = new Date()
+  const man1 = await getNextSeq('Manutencoes')
+  await ManutencaoModel.create({
+    id: man1, maquinaId: mid1, tipo: 'PREVENTIVA', descricao: 'Troca de óleo e inspeção',
+    dataAgendada: now, status: 'PENDENTE', prioridade: 2
+  })
+  const man2 = await getNextSeq('manutencoes')
+  await ManutencaoModel.create({
+    id: man2, maquinaId: mid2, tipo: 'CORRETIVA', descricao: 'Substituição de rolamento',
+    dataAgendada: new Date(now.getTime() + 86400000), status: 'EM_ANDAMENTO', prioridade: 1
+  })
+  const man3 = await getNextSeq('manutencoes')
+  await ManutencaoModel.create({
+    id: man3, maquinaId: mid3, tipo: 'PREVENTIVA', descricao: 'Ajuste e limpeza',
+    dataRealizada: new Date(now.getTime() - 2 * 86400000), status : 'CONCLUIDA', prioridade: 3
+  })
 }
 
-//  Inicialização geral
+// 8) Função que conecta e roda seed
 async function initDb() {
-  await createTables()
+  // Conecta ao mongo (uma vez só)
+  if (mongoose.connection.readyState === 1) return
+  await mongoose.connect(MONGO_URI, mongooseOpts)
+  // Garante seed
   await seedIfEmpty()
 }
 
-module.exports = { db, run, get, all, initDb }
+// 9) Exporta tudo o que o resto do backend precisa
+module.exports = {
+  initDb,
+  getNextSeq,
+  SetorModel,
+  MaquinaModel,
+  ManutencaoModel,
+  UserModel,
+}
+
