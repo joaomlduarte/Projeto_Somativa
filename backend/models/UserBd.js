@@ -1,23 +1,19 @@
 // models/UserBd.js
+// Autenticação simples via Mongoose (email + password em claro para aula)
 
-// Importa helpers de acesso ao banco
-const { get, all } = require('./db') // <- SELECT único e SELECT lista
+const { UserModel } = require('./db')
 
-// Busca usuário por email+senha para login simples
+// Busca usuário por email+senha (retorna sem password)
 async function findByEmailPassword(email, password) {
-  // SELECT somente de campos públicos (sem password)
-  return get(
-    `SELECT id, name, email, role
-       FROM users
-      WHERE email = ? AND password = ?`, // <- match exato (aula/demo)
-    [email, password]                    // <- parâmetros da query
-  )
+  return UserModel.findOne(
+    { email, password },
+    { _id: 0, password: 0 } // projeta sem _id e sem password
+  ).lean()
 }
 
-// (Opcional) Lista todos os usuários (útil para debug/inspeção)
+// Lista todos (debug)
 async function list() {
-  return all(`SELECT id, name, email, role FROM users ORDER BY id ASC`)
+  return UserModel.find({}, { _id: 0, password: 0 }).sort({ id: 1 }).lean()
 }
 
-// Exporta funções ligadas ao domínio de usuário
 module.exports = { findByEmailPassword, list }

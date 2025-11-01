@@ -1,31 +1,36 @@
 // models/SetorBd.js
-const { all, get, run } = require('./db')
+// Camada de dados de 'Setor' com Mongoose mantendo a mesma interface.
 
-// Lista todos os setores (ordenados por nome)
+const { SetorModel, getNextSeq } = require('./db') // importa model e gerador de sequência
+
+// Lista setores (ordenado por nome, como antes)
 async function list() {
-  return all(`SELECT id, nome FROM setores ORDER BY nome ASC`)
+  // Projeta apenas campos relevantes
+  const rows = await SetorModel.find({}, { _id: 0, id: 1, nome: 1 }).sort({ nome: 1 })
+  return rows
 }
 
-// Busca setor por id
+// Busca por id numérico
 async function getById(id) {
-  return get(`SELECT id, nome FROM setores WHERE id = ?`, [id])
+  return SetorModel.findOne({ id }, { _id: 0, id: 1, nome: 1 })
 }
 
-// Cria setor
+// Cria setor com id incremental
 async function create({ nome }) {
-  const { lastID } = await run(`INSERT INTO setores (nome) VALUES (?)`, [nome])
-  return getById(lastID)
+  const next = await getNextSeq('setores')
+  await SetorModel.create({ id: next, nome })
+  return getById(next)
 }
 
-// Atualiza setor
+// Atualiza setor (somente nome)
 async function update(id, { nome }) {
-  await run(`UPDATE setores SET nome = ? WHERE id = ?`, [nome, id])
+  await SetorModel.updateOne({ id }, { $set: { nome } })
   return getById(id)
 }
 
 // Remove setor
 async function remove(id) {
-  await run(`DELETE FROM setores WHERE id = ?`, [id])
+  await SetorModel.deleteOne({ id })
   return { ok: true }
 }
 

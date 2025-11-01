@@ -1,61 +1,39 @@
 // routers/kpiRoute.js
+const express = require('express')
+const router = express.Router()
+const { ManutencaoModel } = require('../models/db')
 
-// Importa Express e cria router
-const express = require('express')        // <- framework web
-const router = express.Router()           // <- instancia de roteador
-
-// Importa helper 'all' para rodar SELECTs agregados
-const { all } = require('../models/db')   // <- acesso direto ao banco para KPIs
-
-// GET /api/kpis – retorna contagens para cards do dashboard
+// GET /api/kpis – contagens para os cards do dashboard
 router.get('/', async (req, res, next) => {
   try {
-    // abertas: manutenções não concluídas
-    const abertas = (await all(
-      `SELECT COUNT(*) AS n
-         FROM manutencoes
-        WHERE status IN ('PENDENTE','EM_ANDAMENTO')`
-    ))[0].n
+    // abertas = não concluídas
+    const abertas = await ManutencaoModel.countDocuments({ status: { $in: ['PENDENTE', 'EM_ANDAMENTO'] } })
 
-    // hoje: agendadas com data_agendada dentro do intervalo do dia corrente
-    const start = new Date(); start.setHours(0,0,0,0)          // <- 00:00:00 local
-    const end = new Date(); end.setHours(23,59,59,999)         // <- 23:59:59.999 local
-    const hoje = (await all(
-      `SELECT COUNT(*) AS n
-         FROM manutencoes
-        WHERE data_agendada IS NOT NULL
-          AND datetime(data_agendada) BETWEEN datetime(?) AND datetime(?)`,
-      [start.toISOString(), end.toISOString()]
-    ))[0].n
+    // hoje = dataAgendada dentro do dia local
+    const start = new Date(); start.setHours(0,0,0,0)
+    const end = new Date(); end.setHours(23,59,59,999)
+    const hoje = await ManutencaoModel.countDocuments({
+      dataAgendada: { $ne: null, $gte: start, $lte: end }
+    })
 
-    // atrasadas: agendadas no passado e ainda não concluídas
-    const atrasadas = (await all(
-      `SELECT COUNT(*) AS n
-         FROM manutencoes
-        WHERE data_agendada IS NOT NULL
-          AND datetime(data_agendada) < datetime(?)
-          AND status IN ('PENDENTE','EM_ANDAMENTO')`,
-      [new Date().toISOString()]
-    ))[0].n
+    // atrasadas = agendadas no passado e não concluídas
+    const agora = new Date()
+    const atrasadas = await ManutencaoModel.countDocuments({
+      dataAgendada: { $ne: null, $lt: agora },
+      status: { $in: ['PENDENTE', 'EM_ANDAMENTO'] }
+    })
 
-    // concluidasMes: concluídas com data_realizada dentro do mês atual
-    const now = new Date()                                   // <- data atual
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1) // <- 1º dia do mês
-    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1) // <- 1º do próximo mês
-    const concluidasMes = (await all(
-      `SELECT COUNT(*) AS n
-         FROM manutencoes
-        WHERE status = 'CONCLUIDA'
-          AND data_realizada IS NOT NULL
-          AND datetime(data_realizada) >= datetime(?)
-          AND datetime(data_realizada) <  datetime(?)`,
-      [firstDay.toISOString(), nextMonth.toISOString()]
-    ))[0].n
+    // concluidasMes = concluídas no mês atual (por dataRealizada)
+    const now = new Date()
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1)
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+    const concluidasMes = await ManutencaoModel.countDocuments({
+      status: 'CONCLUIDA',
+      dataRealizada: { $ne: null, $gte: firstDay, $lt: nextMonth }
+    })
 
-    // Resposta consolidada das KPIs
     res.json({ abertas, atrasadas, hoje, concluidasMes })
-  } catch (e) { next(e) }                // <- encaminha erro p/ middleware global
+  } catch (e) { next(e) }
 })
 
-// Exporta router
 module.exports = router

@@ -39,7 +39,7 @@ app.use('/api', authRoute) // Expoe /users (login simples)
 
 
 // Rota raiz
-app,get('/', (req, res)=>{
+app.get('/', (req, res)=>{
     res.send('API OK')
 })
 

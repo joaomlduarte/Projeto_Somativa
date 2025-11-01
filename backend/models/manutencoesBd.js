@@ -1,132 +1,101 @@
 // models/manutencoesBd.js
+// Mongoose mantendo interface/shape compatíveis com o front.
 
-// Importa helpers do SQLite: all/get/run
-const { all, get, run } = require('./db') // <- abstrações promisificadas de sqlite3
+const { ManutencaoModel, MaquinaModel, getNextSeq } = require('./db')
 
-// Normaliza uma linha de manutenção para o formato que o front espera
-function normalize(row) {                                          // <- recebe linha do banco
-  if (!row) return null                                            // <- se não houver, retorna null
-  const data = row.data_agendada || row.data_realizada || row.created_at // <- define campo 'data'
-  return {                                                         // <- objeto já pronto p/ front
-    id: row.id,                                                    // <- id da manutenção
-    maquinaId: row.maquina_id,                                     // <- FK da máquina
-    tipo: row.tipo,                                                // <- PREVENTIVA | CORRETIVA
-    descricao: row.descricao,                                      // <- texto descritivo
-    dataAgendada: row.data_agendada,                               // <- agendamento (ISO ou null)
-    dataRealizada: row.data_realizada,                             // <- quando finalizou (ISO/null)
-    data,                                                          // <- usado para calendário/ordenação
-    status: row.status,                                            // <- PENDENTE | EM_ANDAMENTO | CONCLUIDA
-    prioridade: row.prioridade,                                    // <- 1..5 (ou null)
-    createdAt: row.created_at                                      // <- data de criação
+// Normaliza o objeto para o front (idem versão SQLite)
+function normalize(doc) {
+  if (!doc) return null
+  const data = doc.dataAgendada || doc.dataRealizada || doc.createdAt
+  return {
+    id: doc.id,
+    maquinaId: doc.maquinaId,
+    tipo: doc.tipo,
+    descricao: doc.descricao,
+    dataAgendada: doc.dataAgendada,
+    dataRealizada: doc.dataRealizada,
+    data,
+    status: doc.status,
+    prioridade: doc.prioridade ?? null,
+    createdAt: doc.createdAt,
   }
 }
 
-// Lista manutenções com filtros opcionais (status, maquinaId, setor)
+// Lista com filtros: status, maquinaId, setor (por setorId da máquina)
 async function list({ status, maquinaId, setor } = {}) {
-  const params = []                                                // <- coletor de parâmetros
-  const conds = []                                                 // <- condições dinâmicas do WHERE
+  const q = {}
+  if (status) q.status = status
+  if (maquinaId) q.maquinaId = Number(maquinaId)
 
-  if (status) { conds.push('m.status = ?'); params.push(status) }  // <- filtra por status (se vier)
-  if (maquinaId) { conds.push('m.maquina_id = ?'); params.push(Number(maquinaId)) } // <- por máquina
-  if (setor) { conds.push('mq.setor_id = ?'); params.push(Number(setor)) } // <- filtra por setor (via join)
+  // Filtro por setor exige olhar máquinas -> pega ids de máquinas do setor
+  if (setor) {
+    const mids = await MaquinaModel.find(
+      { setorId: Number(setor) },
+      { id: 1, _id: 0 }
+    ).lean()
+    q.maquinaId = { $in: mids.map(m => m.id) }
+  }
 
-  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '' // <- monta WHERE final
-
-  // Faz JOIN com máquinas para viabilizar o filtro por setor
-  const rows = await all(
-    `SELECT m.*
-       FROM manutencoes m
-       JOIN maquinas mq ON mq.id = m.maquina_id
-       ${where}
-       ORDER BY m.id DESC`,                                        // <- mais recentes primeiro
-    params                                                          // <- array de parâmetros
-  )
-
-  return rows.map(normalize)                                       // <- normaliza cada linha
+  const rows = await ManutencaoModel.find(q).sort({ id: -1 }).lean()
+  return rows.map(normalize)
 }
 
-// Busca uma manutenção por id
+// Busca por id
 async function getById(id) {
-  const row = await get(`SELECT * FROM manutencoes WHERE id = ?`, [id]) // <- SELECT 1
-  return normalize(row)                                                  // <- normaliza ou null
+  const row = await ManutencaoModel.findOne({ id }).lean()
+  return normalize(row)
 }
 
-// Cria uma manutenção nova
+// Cria manutenção
 async function create(payload) {
-  // Desestrutura com defaults para campos opcionais
-  const {
-    maquinaId,
-    tipo,
-    descricao,
-    dataAgendada = null,
-    dataRealizada = null,
-    status = 'PENDENTE',
-    prioridade = null
-  } = payload
-
-  // Executa INSERT com todos os campos relevantes
-  const { lastID } = await run(
-    `INSERT INTO manutencoes
-     (maquina_id, tipo, descricao, data_agendada, data_realizada, status, prioridade)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [Number(maquinaId), tipo, descricao, dataAgendada, dataRealizada, status, prioridade]
-  )
-
-  return getById(lastID)                                           // <- retorna a manutenção criada
+  const next = await getNextSeq('manutencoes')
+  const doc = {
+    id: next,
+    maquinaId: Number(payload.maquinaId),
+    tipo: payload.tipo,
+    descricao: payload.descricao,
+    dataAgendada: payload.dataAgendada ? new Date(payload.dataAgendada) : null,
+    dataRealizada: payload.dataRealizada ? new Date(payload.dataRealizada) : null,
+    status: payload.status || 'PENDENTE',
+    prioridade: payload.prioridade ?? null,
+  }
+  await ManutencaoModel.create(doc)
+  return getById(next)
 }
 
-// Atualiza (PUT) – substitui campos (com merge dos ausentes)
+// Atualiza (PUT) com merge simples
 async function update(id, payload) {
-  const cur = await getById(id)                                    // <- busca atual
-  if (!cur) throw new Error('Manutenção não encontrada')           // <- valida existência
+  const cur = await ManutencaoModel.findOne({ id })
+  if (!cur) throw new Error('Manutenção não encontrada')
 
-  // Decide novos valores: se vier no payload usa, senão mantém atual
-  const maquinaId = payload.maquinaId != null ? Number(payload.maquinaId) : cur.maquinaId
-  const tipo = payload.tipo ?? cur.tipo
-  const descricao = payload.descricao ?? cur.descricao
-  const dataAgendada = payload.dataAgendada ?? cur.dataAgendada
-  const dataRealizada = payload.dataRealizada ?? cur.dataRealizada
-  const status = payload.status ?? cur.status
-  const prioridade = payload.prioridade ?? cur.prioridade
+  if (payload.maquinaId !== undefined) cur.maquinaId = Number(payload.maquinaId)
+  if (payload.tipo !== undefined) cur.tipo = payload.tipo
+  if (payload.descricao !== undefined) cur.descricao = payload.descricao
+  if (payload.dataAgendada !== undefined) cur.dataAgendada = payload.dataAgendada ? new Date(payload.dataAgendada) : null
+  if (payload.dataRealizada !== undefined) cur.dataRealizada = payload.dataRealizada ? new Date(payload.dataRealizada) : null
+  if (payload.status !== undefined) cur.status = payload.status
+  if (payload.prioridade !== undefined) cur.prioridade = payload.prioridade
 
-  // Aplica o UPDATE com os valores decididos
-  await run(
-    `UPDATE manutencoes
-        SET maquina_id = ?, tipo = ?, descricao = ?,
-            data_agendada = ?, data_realizada = ?,
-            status = ?, prioridade = ?
-      WHERE id = ?`,
-    [maquinaId, tipo, descricao, dataAgendada, dataRealizada, status, prioridade, id]
-  )
-
-  return getById(id)                                               // <- retorna atualizado normalizado
+  await cur.save()
+  return getById(id)
 }
 
-// Patch (parcial) – usado para mudar status ou reagendar data rapidamente
+// Patch (status/data rápida)
 async function patch(id, payload) {
-  const cur = await getById(id)                                    // <- busca atual
-  if (!cur) throw new Error('Manutenção não encontrada')           // <- valida existência
+  const cur = await ManutencaoModel.findOne({ id })
+  if (!cur) throw new Error('Manutenção não encontrada')
 
-  const next = { ...cur }                                          // <- cria cópia para alteração in-memory
-  if (payload.status) next.status = payload.status                 // <- se veio novo status, troca
-  if (payload.data) next.dataAgendada = payload.data               // <- se veio nova data (data), usa no agendamento
+  if (payload.status) cur.status = payload.status
+  if (payload.data) cur.dataAgendada = payload.data ? new Date(payload.data) : null
 
-  // Atualiza somente os campos necessários (status e/ou data_agendada)
-  await run(
-    `UPDATE manutencoes
-        SET data_agendada = ?, status = ?
-      WHERE id = ?`,
-    [next.dataAgendada, next.status, id]
-  )
-
-  return getById(id)                                               // <- devolve versão final
+  await cur.save()
+  return getById(id)
 }
 
-// Remove uma manutenção por id
+// Remove
 async function remove(id) {
-  await run(`DELETE FROM manutencoes WHERE id = ?`, [id])          // <- executa DELETE
-  return { ok: true }                                              // <- resposta simples de sucesso
+  await ManutencaoModel.deleteOne({ id })
+  return { ok: true }
 }
 
-// Exporta o “repositório” de manutenções
 module.exports = { list, getById, create, update, patch, remove }

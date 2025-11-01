@@ -1,105 +1,93 @@
 // routers/manutencoesRoute.js
+const express = require('express')
+const router = express.Router()
 
-// Importa Express e instancia router
-const express = require('express')            // <- framework web
-const router = express.Router()               // <- agrupador de rotas
+const Man = require('../models/manutencoesBd')
+const { ManutencaoModel, MaquinaModel } = require('../models/db')
 
-// Importa “repositório” de Manutenções (operações no banco)
-const Man = require('../models/manutencoesBd') // <- camada de dados de manutenções
-
-// (Novo) Vamos usar uma consulta direta para montar eventos com nome da máquina
-const { all } = require('../models/db')       // <- acesso ao banco para SELECT customizado
-
-// GET /api/manutencoes?status=&maquinaId=&setor= – lista com filtros
+// GET /api/manutencoes?status=&maquinaId=&setor=
 router.get('/', async (req, res, next) => {
   try {
-    const { status, maquinaId, setor } = req.query        // <- lê filtros opcionais
-    const itens = await Man.list({ status, maquinaId, setor }) // <- busca no banco
-    res.json(itens)                                        // <- devolve lista normalizada
-  } catch (e) { next(e) }                                   // <- trata erros via middleware
-})
-
-// GET /api/manutencoes/:id – busca manutenção por id
-router.get('/:id', async (req, res, next) => {
-  try {
-    const item = await Man.getById(Number(req.params.id))  // <- converte id e busca
-    if (!item) return res.status(404).json({ error: 'Manutenção não encontrada' })
-    res.json(item)                                         // <- devolve manutenção
+    const { status, maquinaId, setor } = req.query
+    const itens = await Man.list({ status, maquinaId, setor })
+    res.json(itens)
   } catch (e) { next(e) }
 })
 
-// (NOVO) GET /api/manutencoes/calendar – eventos para o calendário do front
+// GET /api/manutencoes/:id
+router.get('/:id', async (req, res, next) => {
+  try {
+    const item = await Man.getById(Number(req.params.id))
+    if (!item) return res.status(404).json({ error: 'Manutenção não encontrada' })
+    res.json(item)
+  } catch (e) { next(e) }
+})
+
+// GET /api/manutencoes/calendar/events – eventos p/ calendário
 router.get('/calendar/events', async (req, res, next) => {
   try {
-    // Fazemos JOIN para obter o nome da máquina (útil no título do evento)
-    const rows = await all(
-      `SELECT m.id,
-              m.tipo,
-              m.status,
-              m.data_agendada,
-              m.data_realizada,
-              m.created_at,
-              mq.nome AS maquina_nome
-         FROM manutencoes m
-         JOIN maquinas mq ON mq.id = m.maquina_id
-        ORDER BY m.id DESC`
-    )
+    // 1) Busca todas as manutenções
+    const mans = await ManutencaoModel.find().sort({ id: -1 }).lean()
 
-    // Mapeia cada manutenção para o formato de evento esperado pelo front
-    const events = rows.map(r => {
-      // Define início/fim: prioriza data_agendada; se não houver, cai em data_realizada; por fim created_at
-      const start = r.data_agendada || r.data_realizada || r.created_at
-      const end   = r.data_realizada || r.data_agendada || r.created_at
+    // 2) Carrega nomes de máquinas de uma vez
+    const maquinaIds = [...new Set(mans.map(m => m.maquinaId))]
+    const maquinas = await MaquinaModel.find(
+      { id: { $in: maquinaIds } },
+      { id: 1, nome: 1, _id: 0 }
+    ).lean()
+    const mapNome = new Map(maquinas.map(m => [m.id, m.nome]))
 
+    // 3) Mapeia para eventos
+    const events = mans.map(r => {
+      const start = r.dataAgendada || r.dataRealizada || r.createdAt
+      const end   = r.dataRealizada || r.dataAgendada || r.createdAt
       return {
-        id: r.id,                                     // identificador do evento
-        title: `${r.tipo} - ${r.maquina_nome}`,       // título legível no calendário
-        start,                                        // ISO string (ou null) interpretada pelo front
-        end,                                          // idem
-        status: r.status                              // PENDENTE | EM_ANDAMENTO | CONCLUIDA (útil para cor/legenda)
+        id: r.id,
+        title: `${r.tipo} - ${mapNome.get(r.maquinaId) || 'Máquina'}`,
+        start,
+        end,
+        status: r.status
       }
     })
 
-    res.json(events)                                   // <- devolve a lista de eventos
+    res.json(events)
   } catch (e) { next(e) }
 })
 
-// POST /api/manutencoes – cria manutenção
+// POST /api/manutencoes
 router.post('/', async (req, res, next) => {
   try {
-    const payload = req.body || {}                        // <- corpo da requisição
-    // Validação mínima de obrigatórios
+    const payload = req.body || {}
     if (!payload.maquinaId || !payload.tipo || !payload.descricao) {
       return res.status(400).json({ error: 'maquinaId, tipo e descricao são obrigatórios' })
     }
-    const criado = await Man.create(payload)              // <- persiste no banco
-    res.status(201).json(criado)                          // <- 201 Created com objeto criado
+    const criado = await Man.create(payload)
+    res.status(201).json(criado)
   } catch (e) { next(e) }
 })
 
-// PUT /api/manutencoes/:id – atualização completa (merge interno)
+// PUT /api/manutencoes/:id
 router.put('/:id', async (req, res, next) => {
   try {
-    const atualizado = await Man.update(Number(req.params.id), req.body || {}) // <- atualiza
-    res.json(atualizado)                                   // <- devolve atualizado
+    const atualizado = await Man.update(Number(req.params.id), req.body || {})
+    res.json(atualizado)
   } catch (e) { next(e) }
 })
 
-// PATCH /api/manutencoes/:id – atualização parcial (status/data)
+// PATCH /api/manutencoes/:id
 router.patch('/:id', async (req, res, next) => {
   try {
-    const updated = await Man.patch(Number(req.params.id), req.body || {}) // <- muda status/data
-    res.json(updated)                                   // <- devolve parcial atualizado
+    const updated = await Man.patch(Number(req.params.id), req.body || {})
+    res.json(updated)
   } catch (e) { next(e) }
 })
 
-// DELETE /api/manutencoes/:id – remove manutenção
+// DELETE /api/manutencoes/:id
 router.delete('/:id', async (req, res, next) => {
   try {
-    await Man.remove(Number(req.params.id))             // <- deleta
-    res.status(204).send()                              // <- 204 No Content
+    await Man.remove(Number(req.params.id))
+    res.status(204).send()
   } catch (e) { next(e) }
 })
 
-// Exporta router
 module.exports = router
