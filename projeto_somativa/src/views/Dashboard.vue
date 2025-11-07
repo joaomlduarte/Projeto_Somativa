@@ -66,6 +66,7 @@ async function criarParaHoje () {
       status: 'hoje',
       data: hojeStr,
     })
+    
     await Promise.all([manutencoes.carregar(), kpis.carregar()])
     criarHojeForm.value = { titulo: '', setorId: '', maquinaId: '', status: 'hoje', data: hojeStr }
   } catch (e) {

@@ -56,9 +56,9 @@ const MaquinaSchema = new mongoose.Schema(
     id: { type: Number, unique: true, index: true },           // id incremental
     nome: { type: String, required: true },                    // nome da máquina
     setorId: { type: Number, required: true, index: true },    // referência numérica ao Setor.id
-    // ✅ CORRETO: enum + default dentro dos valores permitidos
+    //  CORRETO: enum + default dentro dos valores permitidos
     status: { type: String, enum: ['ATIVA', 'PARADA', 'MANUTENCAO'], default: 'ATIVA' },
-    // ✅ Incluí o campo 'serie' porque você usa no seed e no app
+    //  Incluí o campo 'serie' porque você usa no seed e no app
     serie: { type: String, default: null },
   },
   {
@@ -139,7 +139,7 @@ async function seedIfEmpty() {
 
     // Manutenções (coloquei DENTRO do mesmo if para usar mid1/mid2/mid3)
     const now = new Date()
-    const man1 = await getNextSeq('manutencoes') // ⚠️ padronizado: 'manutencoes'
+    const man1 = await getNextSeq('manutencoes') // padronizado: 'manutencoes'
     await ManutencaoModel.create({
       id: man1, maquinaId: mid1, tipo: 'PREVENTIVA', descricao: 'Troca de óleo e inspeção',
       dataAgendada: now, status: 'PENDENTE', prioridade: 2
