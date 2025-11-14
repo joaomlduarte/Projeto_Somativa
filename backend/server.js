@@ -38,11 +38,6 @@ app.use('/api/kpis', kpiRoute)
 app.use('/api', authRoute) // Expoe /users (login simples)
 
 
-// Rota raiz
-app.get('/', (req, res)=>{
-    res.send('API OK')
-})
-
 // Sobe o servidor apos garantir o DB pronto
 initDb().then(() => {
     app.listen(PORT, () => {
